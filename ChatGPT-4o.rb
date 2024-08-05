@@ -2,7 +2,20 @@ require 'csv'
 require 'nmatrix'
 require 'parallel'
 require 'kdtree'
+require 'optparse'
 
+# コマンドライン引数の解析
+options = { degree: 4 }  # デフォルトの多重度を4に設定
+
+OptionParser.new do |opts|
+  opts.banner = "Usage: ruby script.rb [options]"
+
+  opts.on("-d", "--degree DEGREE", "Set the degree of CF (default: 4)") do |degree|
+    options[:degree] = degree.to_i
+  end
+end.parse!
+
+# ポータルクラスの定義
 class Portal
   attr_accessor :latitude, :longitude, :name
 
@@ -13,6 +26,7 @@ class Portal
   end
 end
 
+# CSVファイルからポータルデータを読み込む関数
 def read_portals_from_csv(file_path)
   portals = []
   CSV.foreach(file_path, headers: true) do |row|
@@ -21,14 +35,16 @@ def read_portals_from_csv(file_path)
   portals
 end
 
+# 三角形内外判定関数
 def is_point_in_triangle?(p, p0, p1, p2)
   matrix = NMatrix.new([3, 3], [p0.longitude - p.longitude, p0.latitude - p.latitude, 1,
                                 p1.longitude - p.latitude, p1.latitude - p.latitude, 1,
                                 p2.longitude - p.latitude, p2.latitude - p.latitude, 1])
   determinant = matrix.det
-  determinant.abs <= 1e-10
+  determinant.abs <= 1e-10 # 小さな値を考慮した誤差
 end
 
+# リンクの交差判定関数
 def do_lines_intersect?(p1, p2, p3, p4)
   def det(matrix)
     matrix.det
@@ -46,6 +62,13 @@ def do_lines_intersect?(p1, p2, p3, p4)
   (det(matrix1) * det(matrix2) < 0) && (det(matrix2) * det(matrix3) < 0)
 end
 
+# KdTreeを構築する関数
+def build_kdtree(portals)
+  points = portals.map { |portal| [portal.longitude, portal.latitude, portal] }
+  Kdtree.new(points)
+end
+
+# 三角形内にあるポータルを探索する関数
 def find_points_in_triangle(kdtree, p1, p2, p3)
   bounds = {
     min_lon: [p1.longitude, p2.longitude, p3.longitude].min,
@@ -59,7 +82,10 @@ def find_points_in_triangle(kdtree, p1, p2, p3)
   candidates.select { |p| is_point_in_triangle?(p, p1, p2, p3) }
 end
 
-def construct_links_and_cfs(portals, existing_links, current_cf, all_cfs, kdtree)
+# 多重CFを構築する再帰関数
+def construct_links_and_cfs(portals, existing_links, current_cf, all_cfs, kdtree, current_degree, max_degree)
+  return if current_degree > max_degree
+
   portals.combination(3).each do |p1, p2, p3|
     if !existing_links.any? { |l| do_lines_intersect?(l[0], l[1], p3, p1) || do_lines_intersect?(l[0], l[1], p3, p2) }
       triangle = [p1, p2, p3]
@@ -69,13 +95,14 @@ def construct_links_and_cfs(portals, existing_links, current_cf, all_cfs, kdtree
       all_cfs << { cf: triangle, links: existing_links + new_links }
       
       unless inner_portals.empty?
-        construct_links_and_cfs(inner_portals, existing_links + new_links, triangle, all_cfs, kdtree)
+        construct_links_and_cfs(inner_portals, existing_links + new_links, triangle, all_cfs, kdtree, current_degree + 1, max_degree)
       end
     end
   end
 end
 
-def find_all_multiple_cfs(portals)
+# 全多重CFを構築する関数
+def find_all_multiple_cfs(portals, max_degree)
   all_cfs = []
   kdtree = build_kdtree(portals)
 
@@ -84,13 +111,17 @@ def find_all_multiple_cfs(portals)
     all_combinations = [p1, p2, p3]
     inner_portals = portals.reject { |p| all_combinations.include?(p) }
 
-    construct_links_and_cfs(inner_portals, [], nil, all_cfs, kdtree)
+    construct_links_and_cfs(inner_portals, [], nil, all_cfs, kdtree, 1, max_degree)
   end
 
   all_cfs
 end
 
-# 使用例
+# CSVファイルの読み込み（例として 'portals.csv' ファイルを使用）
 portals = read_portals_from_csv('portals.csv')
-all_cfs = find_all_multiple_cfs(portals)
+
+# 多重度を基にCFを構築
+all_cfs = find_all_multiple_cfs(portals, options[:degree])
+
+# 結果を出力
 puts all_cfs

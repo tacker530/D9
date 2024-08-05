@@ -1,7 +1,9 @@
 require 'csv'
 require 'numo/narray'
 require 'parallel'
+require 'optparse'
 
+# ポータルを表すクラス
 class Portal
   attr_reader :lat, :lon, :name
 
@@ -12,6 +14,7 @@ class Portal
   end
 end
 
+# 空間を四分割して管理するQuadTreeクラス
 class QuadTree
   attr_reader :boundary, :portals
 
@@ -25,6 +28,7 @@ class QuadTree
     @southeast = nil
   end
 
+  # ポータルを挿入するメソッド
   def insert(portal)
     return false unless @boundary.contains?(portal)
 
@@ -43,6 +47,7 @@ class QuadTree
     false
   end
 
+  # 空間を4分割するメソッド
   def subdivide
     x = @boundary.x
     y = @boundary.y
@@ -57,6 +62,7 @@ class QuadTree
     @divided = true
   end
 
+  # 指定された範囲内のポータルを検索するメソッド
   def query(range)
     found = []
     return found unless @boundary.intersects?(range)
@@ -76,6 +82,7 @@ class QuadTree
   end
 end
 
+# 矩形領域を表すクラス
 class Rect
   attr_reader :x, :y, :width, :height
 
@@ -86,11 +93,13 @@ class Rect
     @height = height
   end
 
+  # ポータルが矩形内に含まれるかチェックするメソッド
   def contains?(portal)
     portal.lon >= @x - @width && portal.lon <= @x + @width &&
       portal.lat >= @y - @height && portal.lat <= @y + @height
   end
 
+  # 他の矩形と交差するかチェックするメソッド
   def intersects?(other)
     !(other.x - other.width > @x + @width ||
       other.x + other.width < @x - @width ||
@@ -99,6 +108,7 @@ class Rect
   end
 end
 
+# CSVファイルからポータルデータを読み込むメソッド
 def load_portals(file_path)
   portals = []
   CSV.foreach(file_path) do |row|
@@ -107,6 +117,7 @@ def load_portals(file_path)
   portals
 end
 
+# QuadTreeを構築するメソッド
 def build_quad_tree(portals)
   min_lat = portals.map(&:lat).min
   max_lat = portals.map(&:lat).max
@@ -123,6 +134,7 @@ def build_quad_tree(portals)
   quad_tree
 end
 
+# 点が三角形内にあるかチェックするメソッド（行列計算を使用）
 def points_in_triangle(points, triangle)
   p = Numo::DFloat.cast(points.map { |pt| [pt.lon, pt.lat] })
   t = Numo::DFloat.cast(triangle.map { |pt| [pt.lon, pt.lat] })
@@ -144,7 +156,8 @@ def points_in_triangle(points, triangle)
   (u >= 0) & (v >= 0) & (u + v <= 1)
 end
 
-def find_multi_cf(quad_tree, depth = 1, max_depth = 3)
+# 多重CFを検索するメソッド
+def find_multi_cf(quad_tree, depth = 1, max_depth)
   result = []
   portals = quad_tree.query(quad_tree.boundary)
 
@@ -168,12 +181,28 @@ def find_multi_cf(quad_tree, depth = 1, max_depth = 3)
   end.compact.flatten
 end
 
+# コマンドラインオプションの解析
+options = { max_depth: 4 }
+OptionParser.new do |opts|
+  opts.banner = "Usage: ruby script_name.rb [options]"
+
+  opts.on("-d", "--depth DEPTH", Integer, "多重度を指定（デフォルト: 4）") do |d|
+    options[:max_depth] = d
+  end
+
+  opts.on("-h", "--help", "ヘルプを表示") do
+    puts opts
+    exit
+  end
+end.parse!
+
 # メイン処理
 portals = load_portals('portals.csv')
 quad_tree = build_quad_tree(portals)
-multi_cfs = find_multi_cf(quad_tree)
+multi_cfs = find_multi_cf(quad_tree, 1, options[:max_depth])
 
-puts "Found #{multi_cfs.length} multi CFs:"
+puts "使用している最大深さ（多重度）: #{options[:max_depth]}"
+puts "#{multi_cfs.length}個の多重CFが見つかりました:"
 multi_cfs.each do |cf|
-  puts "Depth: #{cf[:depth]}, Portals: #{cf[:portals].map(&:name).join(', ')}"
+  puts "深さ: #{cf[:depth]}, ポータル: #{cf[:portals].map(&:name).join(', ')}"
 end
