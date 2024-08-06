@@ -1,3 +1,10 @@
+# 
+#  d9.rb -- new HCF6 searcher program
+#            created 2024.08.05
+#
+#  ruby Claude1.5.rb -d 5 -p  # 多重度5で進捗表示あり
+#  ruby Claude1.5.rb -d 3 --no-progress  # 多重度3で進捗表示なし
+
 require 'csv'
 require 'numo/narray'
 require 'parallel'
@@ -139,9 +146,9 @@ def points_in_triangle(points, triangle)
   p = Numo::DFloat.cast(points.map { |pt| [pt.lon, pt.lat] })
   t = Numo::DFloat.cast(triangle.map { |pt| [pt.lon, pt.lat] })
 
-  v0 = t[1] - t[0]
-  v1 = t[2] - t[0]
-  v2 = p - t[0]
+  v0 = t[1, true] - t[0, true]
+  v1 = t[2, true] - t[0, true]
+  v2 = p - t[0, true]
 
   d00 = (v0 * v0).sum
   d01 = (v0 * v1).sum
@@ -157,11 +164,13 @@ def points_in_triangle(points, triangle)
 end
 
 # 多重CFを検索するメソッド
-def find_multi_cf(quad_tree, depth = 1, max_depth)
+def find_multi_cf(quad_tree, depth = 1, max_depth, show_progress)
   result = []
   portals = quad_tree.query(quad_tree.boundary)
+  total_combinations = portals.combination(3).size
+  processed = 0
 
-  Parallel.map(portals.combination(3).to_a, in_processes: 4) do |triangle|
+  Parallel.map(portals.combination(3).each_with_index, in_processes: 4) do |(triangle, index)|
     bounding_box = Rect.new(
       (triangle.map(&:lon).min + triangle.map(&:lon).max) / 2,
       (triangle.map(&:lat).min + triangle.map(&:lat).max) / 2,
@@ -172,22 +181,31 @@ def find_multi_cf(quad_tree, depth = 1, max_depth)
     potential_inner_portals = quad_tree.query(bounding_box) - triangle
     inner_portals = potential_inner_portals.select { |p| points_in_triangle([p], triangle)[0] }
 
+    if show_progress
+      processed += 1
+      print "\rProgress: #{(processed.to_f / total_combinations * 100).round(2)}% complete" if processed % 1000 == 0
+    end
+
     if inner_portals.empty?
       { portals: triangle, depth: depth }
     elsif depth < max_depth
       inner_quad_tree = build_quad_tree(triangle + inner_portals)
-      find_multi_cf(inner_quad_tree, depth + 1, max_depth)
+      find_multi_cf(inner_quad_tree, depth + 1, max_depth, false)  # 再帰呼び出しではプログレス表示をオフに
     end
   end.compact.flatten
 end
 
 # コマンドラインオプションの解析
-options = { max_depth: 4 }
+options = { max_depth: 4, show_progress: true }
 OptionParser.new do |opts|
   opts.banner = "Usage: ruby script_name.rb [options]"
 
   opts.on("-d", "--depth DEPTH", Integer, "多重度を指定（デフォルト: 4）") do |d|
     options[:max_depth] = d
+  end
+
+  opts.on("-p", "--[no-]progress", "進捗表示の有無（デフォルト: 表示する）") do |p|
+    options[:show_progress] = p
   end
 
   opts.on("-h", "--help", "ヘルプを表示") do
@@ -199,8 +217,14 @@ end.parse!
 # メイン処理
 portals = load_portals('portals.csv')
 quad_tree = build_quad_tree(portals)
-multi_cfs = find_multi_cf(quad_tree, 1, options[:max_depth])
 
+puts "検索を開始します..."
+start_time = Time.now
+multi_cfs = find_multi_cf(quad_tree, 1, options[:max_depth], options[:show_progress])
+end_time = Time.now
+
+puts "\n検索が完了しました。"
+puts "処理時間: #{(end_time - start_time).round(2)}秒"
 puts "使用している最大深さ（多重度）: #{options[:max_depth]}"
 puts "#{multi_cfs.length}個の多重CFが見つかりました:"
 multi_cfs.each do |cf|
